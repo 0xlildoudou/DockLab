@@ -1,2 +1,2 @@
 infra.yml
-docker-build.hcl
+*.hcl
