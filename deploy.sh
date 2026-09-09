@@ -159,24 +159,31 @@ deploydock() {
                 ports=$(yq eval '.'"${service}"'.public_ports | map("-p " + .) |join (" ")' infra.yml)
                 container_name="$USER-$service"
                 networks=$(yq eval '.'"${service}"'.networks | map("--network '"$USER-"'" + .) |join (" ")' infra.yml)
+                for porthote in  $(yq eval '.'"${service}"'.public_ports[] | split(":") | .[0]' infra.yml) ; do
+                        if ss -tulpn | grep ":${porthote}\b" > /dev/null 2>&1 ; then
+                                printf "\033[1mLe port %s est déjà utilisé sur l'hôte. echec de la création.\033[0m\n" "$porthote"
+                                dropNodes
+                                return 1 >/dev/null ||exit 1
+                        fi
+                done
                 image_tag=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep -E "^$USER-.*-${service}")
-                       docker run -tid --privileged \
-                        -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-                        --name "$container_name" \
-                        $ports \
-                        $networks \
-                        --cgroupns host \
-                        -h "$container_name" \
-                        "$image_tag" >/dev/null
+                if docker run -tid --privileged \
+                   -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+                   --name "$container_name" \
+                   $ports \
+                   $networks \
+                   --cgroupns host \
+                   -h "$container_name" \
+                   "$image_tag" >/dev/null ; then
 
-                        docker exec "$container_name" useradd -m -s /bin/bash "$USER"
-                        docker exec "$container_name" bash -c "mkdir -p /home/$USER/.ssh && chmod 700 /home/$USER/.ssh && chown -R $USER:$USER /home/$USER/.ssh"
-                        docker cp "$SSH_KEY_FILE" "$container_name:/home/$USER/.ssh/authorized_keys" > /dev/null 2>&1
-                        docker exec "$container_name" bash -c "chmod 600 /home/$USER/.ssh/authorized_keys && chown $USER:$USER /home/$USER/.ssh/authorized_keys"
-                        docker exec "$container_name" bash -c "echo '$USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$USER"
-                        docker exec "$container_name" bash -c "systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || service ssh restart 2>/dev/null"
-                        echo "Conteneur $container_name créé."
-
+                    docker exec "$container_name" useradd -m -s /bin/bash "$USER"
+                    docker exec "$container_name" bash -c "mkdir -p /home/$USER/.ssh && chmod 700 /home/$USER/.ssh && chown -R $USER:$USER /home/$USER/.ssh"
+                    docker cp "$SSH_KEY_FILE" "$container_name:/home/$USER/.ssh/authorized_keys" > /dev/null 2>&1
+                    docker exec "$container_name" bash -c "chmod 600 /home/$USER/.ssh/authorized_keys && chown $USER:$USER /home/$USER/.ssh/authorized_keys"
+                    docker exec "$container_name" bash -c "echo '$USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$USER"
+                    docker exec "$container_name" bash -c "systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || service ssh restart 2>/dev/null"
+                    echo "Conteneur $container_name créé."
+                fi
 
         done
         infosNodes
@@ -347,7 +354,7 @@ EOF
 
     for conteneur in $containers; do
         local ip
-        ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$conteneur")
+        ip=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{println $v.IPAddress}}{{end}}' "$conteneur" | head -n 1)
         local name
         name=$(docker inspect -f '{{.Name}}' "$conteneur" | sed 's/\///')
 
