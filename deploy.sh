@@ -6,7 +6,7 @@
 #
 #  Auteur : Xavier, penthium2
 #
-#  Date : 04/09/2026 - V6.6.6
+#  Date : 04/09/2026 - V7.6.66
 #
 ###########################################################
 
@@ -21,7 +21,6 @@ spinner() {
         printf "%s\b" "${sp:i++%n:1}"
     done
 }
-# Method to kill the animation :
 killspinner() {
 kill $pidspin 
 printf "\n"
@@ -36,6 +35,7 @@ Options :
   --create [nb] [os]   Créer des conteneurs.
                        [nb] : nombre de conteneurs (défaut: 1). Doit être un entier supérieur à 0.
                        [os] : debian ou oraclelinux (si non renseigné, le choix sera demandé).
+  --baker              Construire les images Docker et déployer les conteneurs selon infra.yml.
   --drop               Supprimer tous les conteneurs créés par le script.
   --infos              Afficher l'IP et le nom des conteneurs.
   --start              Redémarrer les conteneurs arrêtés.
@@ -301,6 +301,12 @@ dropNodes() {
     if docker network rm $(docker network ls -q -f name=$USER*) > /dev/null 2>&1; then
         echo "Fin de la suppression des réseaux."
     fi
+    if docker rmi $(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^$USER-") >/dev/null 2>&1; then
+        echo "Fin de la suppression des images Docker."
+    fi
+
+
+
 }
 
 startNodes() {

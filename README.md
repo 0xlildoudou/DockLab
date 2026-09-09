@@ -18,8 +18,9 @@
 ## 🚀 Fonctionnalités
 
 - ⚡ **Déploiement à la volée** : Instanciation rapide de nœuds de test multi-OS.
+- ⚡ **Déploiement  planifié** : Instanciation via fichier d'infrastructure infra.yml
+- 🏗️ **Build intelligent** : Détection de l'image locale et build automatique depuis le `Dockerfile` si l'image est manquante ou via buildx bake.
 - 🔑 **Gestion SSH automatique** : Détection ou génération automatique des clés SSH (`id_ed25519` ou `id_rsa`) et injection sans mot de passe.
-- 🏗️ **Build intelligent** : Détection de l'image locale et build automatique depuis le `Dockerfile` si l'image est manquante.
 - ⚙️ **Support Systemd complet** : Permet de tester des rôles Ansible gérant des services (`systemctl`).
 - 📝 **Générateur d'inventaire Ansible** : Création automatique d'un fichier `00_inventory.yml` prêt à l'emploi.
 
@@ -34,14 +35,15 @@ DockLab/
 ├── oraclelinux/
 │   └── Dockerfile
 ├── deploy.sh
-├── .gitignore
+├── infra.yml
 ├── LICENSE
 └── README.md
 ```
 
 # 🛠️ Prérequis
 
-Docker installé et configuré (avec les droits d'exécution sans sudo pour votre utilisateur).
+- Docker installé et configuré (avec les droits d'exécution sans sudo pour votre utilisateur).
+- yq installé (version https://github.com/mikefarah/yq/ version v4.53.3).
 
 
 # 📖 Aide complète du script (deploy.sh)
@@ -52,6 +54,7 @@ Voici le détail complet des options acceptées par le script :
 Usage: ./deploy.sh [OPTION] [ARGUMENTS]
 
 Options :
+  --baker              Construire les images Docker et déployer les conteneurs selon infra.yml.
   --create [nb] [os]   Créer des conteneurs.
                        [nb] : nombre de conteneurs (défaut: 1). Doit être un entier supérieur à 0.
                        [os] : debian ou oraclelinux (si non renseigné, le choix sera demandé).
@@ -60,6 +63,8 @@ Options :
   --start              Redémarrer les conteneurs arrêtés.
   --ansible            Générer l'inventaire Ansible (00_inventory.yml).
 ```
+
+
 # 💻 Exemples d'utilisation
 
 Rendez d'abord le script exécutable :
@@ -67,7 +72,44 @@ Rendez d'abord le script exécutable :
 ```Bash
 chmod +x deploy.sh
 ```
-1. Déploiement de conteneurs (--create)
+## Deploiement de conteneurs
+1. Déploiement de conteneur (--baker)
+Cette option s'appuis sur un fichier infra.yml avec les informations souhaité :
+exemple de fichier infra.yml :
+```
+apache:
+  os: "debian"
+  public_ports:
+    - 80:80
+    - 9443:443
+  networks:
+    - front
+    - db
+mysql:
+  os: "oracle"
+  private_ports:
+    - 3306
+  networks:
+    - db
+```
+
+exemple d'utilisation : 
+```
+./deploy.sh --baker 
+ --> Build terminé avec succès.
+
+Le réseau front a été créé
+Le réseau db a été créé
+Conteneur penthium2-apache créé.
+Conteneur penthium2-mysql créé.
+
+Informations des conteneurs : 
+   => /penthium2-mysql - IP: 172.22.0.3  - Ports hôte: 
+   => /penthium2-apache - IP: 172.22.0.2 172.21.0.2  - Ports hôte: 80 9443
+```
+
+
+2. Déploiement de conteneurs (--create)
 Mode interactif (le script vous demande de choisir l'OS, Oracle Linux par défaut) :
 
 ```Bash
@@ -84,27 +126,28 @@ Déploiement direct sur Oracle Linux :
 ```Bash
 ./deploy.sh --create 2 oraclelinux
 ```
+## Commandes utiles
 
-2. Informations des conteneurs (--infos)
+1. Informations des conteneurs (--infos)
 Affiche le nom et l'adresse IP attribuée à chaque conteneur créé par le script :
 
 ```Bash
 ./deploy.sh --infos
 ```
 
-3. Génération de l'inventaire Ansible (--ansible)
+2. Génération de l'inventaire Ansible (--ansible)
 Crée la structure ansible_dir/ et génère le fichier 00_inventory.yml contenant la liste des conteneurs actifs et leurs adresses IP :
 
 ```Bash
 ./deploy.sh --ansible
 ```
-4. Redémarrage des conteneurs (--start)
+3. Redémarrage des conteneurs (--start)
 Redémarre l'ensemble des conteneurs arrêtés et relance le service SSH à l'intérieur :
 
 ```Bash
 ./deploy.sh --start
 ```
-5. Suppression des conteneurs (--drop)
+4. Suppression des conteneurs (--drop)
 Supprime tous les conteneurs du lab et nettoie le fichier ~/.ssh/known_hosts des clés obsolètes :
 
 ```Bash
