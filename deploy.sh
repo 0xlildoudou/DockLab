@@ -12,6 +12,21 @@
 
 # Functions #################################_______________
 
+spinner() {
+    local i sp n
+    sp='/-\|'
+    n=${#sp}
+    printf ' '
+    while sleep 0.1; do
+        printf "%s\b" "${sp:i++%n:1}"
+    done
+}
+# Method to kill the animation :
+killspinner() {
+kill $pidspin 
+printf "\n"
+}
+
 help() {
 cat << EOF
 
@@ -115,38 +130,57 @@ group "default" {
     targets = $targets
 }
 " > docker-bake.hcl
-    docker buildx bake
+
+    spinner &
+    pidspin=$(jobs -p)
+    disown
+    if docker buildx bake > /dev/null 2>&1; then
+        echo "--> Build terminé avec succès." >&2
+    else
+        echo "Erreur : Échec du build." >&2
+        exit 1
+    fi
+    killspinner
+
+}
+deploylan() {
+        for lan in $(yq eval '[.[].networks[]]  | unique |join (" ")' infra.yml) ; do
+                if ! docker network inspect $lan > /dev/null 2>&1 ; then
+                        docker network create --attachable $USER-$lan > /dev/null 2>&1
+                        echo "Le réseau $lan a été créé"
+                fi
+        done
 
 }
 
-backer_launcher() {
-    checkAndCreateSshKey
+deploydock() {
+        for dockerimage in $(awk -F '"' '/tags/ { print $2 }' docker-bake.hcl) ; do
+                service=$(echo "$dockerimage" | sed -E 's/[a-z0-9]+-[a-z0-9]+-([a-z0-9]+)(-[0-9]+|:).*$/\1/')
+                ports=$(yq eval '.'"${service}"'.public_ports | map("-p " + .) |join (" ")' infra.yml)
+                container_name="$USER-$service"
+                networks=$(yq eval '.'"${service}"'.networks | map("--network '"$USER-"'" + .) |join (" ")' infra.yml)
+                image_tag=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep -E "^$USER-.*-${service}")
+                       docker run -tid --privileged \
+                        -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+                        --name "$container_name" \
+                        $ports \
+                        $networks \
+                        --cgroupns host \
+                        -h "$container_name" \
+                        "$image_tag" >/dev/null
 
-    for i in $(seq $min $max); do
-        local container_name="$USER-$i"
-
-        docker run -tid --privileged \
-            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-            --name "$container_name" \
-            --cgroupns host \
-            -h "t$container_name" \
-            "$image_tag" >/dev/null
-
-        docker exec "$container_name" useradd -m -s /bin/bash -p sa3tHJ3/KuYvI "$USER"
-        docker exec "$container_name" bash -c "mkdir -p /home/$USER/.ssh && chmod 700 /home/$USER/.ssh && chown -R $USER:$USER /home/$USER/.ssh"
-        docker cp "$SSH_KEY_FILE" "$container_name:/home/$USER/.ssh/authorized_keys"
-        docker exec "$container_name" bash -c "chmod 600 /home/$USER/.ssh/authorized_keys && chown $USER:$USER /home/$USER/.ssh/authorized_keys"
-        docker exec "$container_name" bash -c "echo '$USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$USER"
-        docker exec "$container_name" bash -c "systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || service ssh restart 2>/dev/null"
-
-        echo "Conteneur $container_name créé."
-    done
-
-    infosNodes
+                        docker exec "$container_name" useradd -m -s /bin/bash "$USER"
+                        docker exec "$container_name" bash -c "mkdir -p /home/$USER/.ssh && chmod 700 /home/$USER/.ssh && chown -R $USER:$USER /home/$USER/.ssh"
+                        docker cp "$SSH_KEY_FILE" "$container_name:/home/$USER/.ssh/authorized_keys" > /dev/null 2>&1
+                        docker exec "$container_name" bash -c "chmod 600 /home/$USER/.ssh/authorized_keys && chown $USER:$USER /home/$USER/.ssh/authorized_keys"
+                        docker exec "$container_name" bash -c "echo '$USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$USER"
+                        docker exec "$container_name" bash -c "systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || service ssh restart 2>/dev/null"
+                        echo "Conteneur $container_name créé."
 
 
+        done
+        infosNodes
 }
-
 checkAndBuildImage() {
     local os_type=$1
     local image_name
@@ -222,7 +256,7 @@ createNodes() {
     image_tag=$(checkAndBuildImage "$os_type")
 
     local idmax
-    idmax=$(docker ps -a --format '{{.Names}}' | awk -F "-" -v user="$USER" '$0 ~ "^"user" {print $NF}' | sort -n | tail -1)
+    idmax=$(docker ps -a --format '{{.Names}}' | awk -F "-" -v user="$USER" '$0 ~ "^"user"-test-" {print $NF}' | sort -n | tail -1)
     idmax=${idmax:-0}
 
     local min=$((idmax + 1))
@@ -231,23 +265,19 @@ createNodes() {
     echo "--> Déploiement de $nb_machine conteneur(s) basé(s) sur $image_tag..."
 
     for i in $(seq $min $max); do
-        local container_name="$USER-$i"
-        
+        local container_name="$USER-test-$i"
         docker run -tid --privileged \
             -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
             --name "$container_name" \
             --cgroupns host \
-            -h "t$container_name" \
+            -h "$container_name" \
             "$image_tag" >/dev/null
 
         docker exec "$container_name" useradd -m -s /bin/bash -p sa3tHJ3/KuYvI "$USER"
         docker exec "$container_name" bash -c "mkdir -p /home/$USER/.ssh && chmod 700 /home/$USER/.ssh && chown -R $USER:$USER /home/$USER/.ssh"
-        
         docker cp "$SSH_KEY_FILE" "$container_name:/home/$USER/.ssh/authorized_keys"
         docker exec "$container_name" bash -c "chmod 600 /home/$USER/.ssh/authorized_keys && chown $USER:$USER /home/$USER/.ssh/authorized_keys"
-        
         docker exec "$container_name" bash -c "echo '$USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$USER"
-        
         docker exec "$container_name" bash -c "systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || service ssh restart 2>/dev/null"
 
         echo "Conteneur $container_name créé."
@@ -260,13 +290,16 @@ dropNodes() {
     echo "Suppression des conteneurs..."
     local containers
     containers=$(docker ps -a -q -f "name=^/${USER}")
-    
+
     if [ -n "$containers" ]; then
-        docker rm -f $containers
+        docker rm -f $containers > /dev/null
         sed -i '/172.17.0./d' "$HOME/.ssh/known_hosts" 2>/dev/null
-        echo "Fin de la suppression."
+        echo "Fin de la suppression des docks."
     else
         echo "Aucun conteneur à supprimer."
+    fi
+    if docker network rm $(docker network ls -q -f name=$USER*) > /dev/null 2>&1; then
+        echo "Fin de la suppression des réseaux."
     fi
 }
 
@@ -289,7 +322,7 @@ startNodes() {
 createAnsible() {
     local ANSIBLE_DIR="ansible_dir"
     mkdir -p "$ANSIBLE_DIR/host_vars" "$ANSIBLE_DIR/group_vars"
-    
+
     cat << EOF > "$ANSIBLE_DIR/00_inventory.yml"
 all:
   vars:
@@ -311,7 +344,7 @@ EOF
         ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$conteneur")
         local name
         name=$(docker inspect -f '{{.Name}}' "$conteneur" | sed 's/\///')
-        
+
         echo "    $name:" >> "$ANSIBLE_DIR/00_inventory.yml"
         echo "      ansible_host: $ip" >> "$ANSIBLE_DIR/00_inventory.yml"
     done
@@ -323,7 +356,7 @@ infosNodes() {
     echo ""
     echo "Informations des conteneurs : "
     local containers
-    containers=$(docker ps -a -q -f "name=^/${USER}")
+    containers=$(docker ps -a -q -f "name=^${USER}")
 
     if [ -z "$containers" ]; then
         echo "   Aucun conteneur trouvé."
@@ -331,7 +364,7 @@ infosNodes() {
     fi
 
     for conteneur in $containers; do      
-        docker inspect -f '   => {{.Name}} - {{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$conteneur"
+        docker inspect -f '   => {{.Name}} - IP: {{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}} - Ports hôte: {{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{.HostPort}} {{end}}{{end}}' "$conteneur"
     done
     echo ""
 }
@@ -346,6 +379,9 @@ fi
 case "$1" in
     --baker)
         baker
+        checkAndCreateSshKey
+        deploylan
+        deploydock
         ;;
     --create)
         if [ $# -gt 3 ]; then

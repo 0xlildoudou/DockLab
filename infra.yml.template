@@ -1,0 +1,15 @@
+#Rename this file whithout .template
+apache:
+  os: "debian"
+  public_ports:
+    - 80:80
+    - 9443:443
+  networks:
+    - front
+    - db
+mysql:
+  os: "oracle"
+  private_ports:
+    - 3306
+  networks:
+    - db
