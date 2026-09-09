@@ -70,6 +70,83 @@ getDockerImageName() {
     echo "${os_type}-${version}-systemd-ssh:latest"
 }
 
+
+
+baker() {
+    for infra_name in $(yq 'keys | .[]' infra.yml) ; do 
+    infra_os=$(yq  ".${infra_name}.os" infra.yml)
+    infra_expports=$(yq eval '.'"${infra_name}"'.private_ports | join (" ")' infra.yml 2> /dev/null)
+    if [[ -n "${infra_expports}" ]] ; then
+        dockerfile="dockerfile-inline = \"FROM base_image\nEXPOSE ${infra_expports}\""
+        tagports="-${infra_expports// /-}"
+    else
+        dockerfile='dockerfile-inline = "FROM base_image"'
+        tagports=''
+    fi 
+    dock="$dock
+target \"${USER}_${infra_name}\" {
+    contexts = {
+        base_image = \"target:${infra_os}_base\"
+    }
+    $dockerfile
+    tags              = [\"$USER-${infra_os}-${infra_name}${tagports}:latest\"]
+}
+"
+    unset infra_name infra_os infra_expports
+    done
+    targets=$(echo "$dock" | awk -F '"' '/target / { if (targets != "") targets = targets ", "
+targets = targets "\"" $2 "\""
+}
+END { print "[" targets "]" }')
+
+
+    echo "
+target \"debian_base\" {
+    context    = \"./debian\"
+    dockerfile = \"Dockerfile\"
+}
+
+target \"oracle_base\" {
+    context    = \"./oraclelinux\"
+    dockerfile = \"Dockerfile\"
+}
+$dock
+group "default" {
+    targets = $targets
+}
+" > docker-bake.hcl
+    docker buildx bake
+
+}
+
+backer_launcher() {
+    checkAndCreateSshKey
+
+    for i in $(seq $min $max); do
+        local container_name="$USER-$i"
+
+        docker run -tid --privileged \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            --name "$container_name" \
+            --cgroupns host \
+            -h "t$container_name" \
+            "$image_tag" >/dev/null
+
+        docker exec "$container_name" useradd -m -s /bin/bash -p sa3tHJ3/KuYvI "$USER"
+        docker exec "$container_name" bash -c "mkdir -p /home/$USER/.ssh && chmod 700 /home/$USER/.ssh && chown -R $USER:$USER /home/$USER/.ssh"
+        docker cp "$SSH_KEY_FILE" "$container_name:/home/$USER/.ssh/authorized_keys"
+        docker exec "$container_name" bash -c "chmod 600 /home/$USER/.ssh/authorized_keys && chown $USER:$USER /home/$USER/.ssh/authorized_keys"
+        docker exec "$container_name" bash -c "echo '$USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$USER"
+        docker exec "$container_name" bash -c "systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || service ssh restart 2>/dev/null"
+
+        echo "Conteneur $container_name créé."
+    done
+
+    infosNodes
+
+
+}
+
 checkAndBuildImage() {
     local os_type=$1
     local image_name
@@ -145,7 +222,7 @@ createNodes() {
     image_tag=$(checkAndBuildImage "$os_type")
 
     local idmax
-    idmax=$(docker ps -a --format '{{.Names}}' | awk -F "-" -v user="$USER" '$0 ~ "^"user"-test-" {print $NF}' | sort -n | tail -1)
+    idmax=$(docker ps -a --format '{{.Names}}' | awk -F "-" -v user="$USER" '$0 ~ "^"user" {print $NF}' | sort -n | tail -1)
     idmax=${idmax:-0}
 
     local min=$((idmax + 1))
@@ -154,7 +231,7 @@ createNodes() {
     echo "--> Déploiement de $nb_machine conteneur(s) basé(s) sur $image_tag..."
 
     for i in $(seq $min $max); do
-        local container_name="$USER-test-$i"
+        local container_name="$USER-$i"
         
         docker run -tid --privileged \
             -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
@@ -176,13 +253,13 @@ createNodes() {
         echo "Conteneur $container_name créé."
     done
 
-    infosNodes  
+    infosNodes
 }
 
 dropNodes() {
     echo "Suppression des conteneurs..."
     local containers
-    containers=$(docker ps -a -q -f "name=^/${USER}-test-")
+    containers=$(docker ps -a -q -f "name=^/${USER}")
     
     if [ -n "$containers" ]; then
         docker rm -f $containers
@@ -195,7 +272,7 @@ dropNodes() {
 
 startNodes() {
     local containers
-    containers=$(docker ps -a -q -f "name=^/${USER}-test-")
+    containers=$(docker ps -a -q -f "name=^/${USER}")
 
     if [ -n "$containers" ]; then
         echo "Redémarrage des conteneurs..."
@@ -222,7 +299,7 @@ all:
 EOF
 
     local containers
-    containers=$(docker ps -q -f "name=^/${USER}-test-")
+    containers=$(docker ps -q -f "name=^/${USER}")
 
     if [ -z "$containers" ]; then
         echo "Aucun conteneur actif pour l'inventaire."
@@ -246,7 +323,7 @@ infosNodes() {
     echo ""
     echo "Informations des conteneurs : "
     local containers
-    containers=$(docker ps -a -q -f "name=^/${USER}-test-")
+    containers=$(docker ps -a -q -f "name=^/${USER}")
 
     if [ -z "$containers" ]; then
         echo "   Aucun conteneur trouvé."
@@ -267,6 +344,9 @@ if [ $# -eq 0 ]; then
 fi
 
 case "$1" in
+    --baker)
+        baker
+        ;;
     --create)
         if [ $# -gt 3 ]; then
             echo "Erreur : Trop d'arguments pour --create." >&2
